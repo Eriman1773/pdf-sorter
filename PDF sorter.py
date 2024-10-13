@@ -7,42 +7,63 @@ import time
 import traceback
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
+import shutil
 
 # Export
 # - complete_match(name, text)
 # - find_name_in_string(name, text)
+# - move_file(src_file_path, dest_dir)
 
 
-def debug_decorator(func, record_errors=True, display_errors_in_full=True, display_errors_short=True, display_info=True):
+def write_error_to_excel(file_path, error_data, column_names):
+    """
+    This function handles the creation of the Excel file and writing errors to it.
+    :param file_path: Path to the Excel file where errors are logged.
+    :param error_data: A list of error details to be written to the Excel file.
+    """
+    while True:
+        try:
+            # Check if the Excel file already exists
+            if os.path.exists(file_path):
+                workbook = load_workbook(file_path)
+                sheet = workbook.active
+            else:
+                # Create a new workbook and set headers if the file doesn't exist
+                workbook = Workbook()
+                sheet = workbook.active
+                sheet.append(column_names)
+            break
+        except (PermissionError, InvalidFileException):
+            print(f"Excel file '{file_path}' is locked or in use. Retrying in 3 seconds...")
+            time.sleep(3)
 
-    log_dir = 'errors'  # Папка для хранения логов ошибок
+    # Add the new error data to the sheet
+    sheet.append(error_data)
+
+    # Try saving the workbook, handling potential permission issues
+    while True:
+        try:
+            workbook.save(file_path)
+            break
+        except PermissionError:
+            print(f"Cannot save Excel file '{file_path}' as it is locked. Retrying in 3 seconds...")
+            time.sleep(3)
+
+
+def debug_decorator(func, record_logs=True, record_errors=True, display_errors_in_full=True, display_errors_short=False,
+                    display_info=True):
+    log_dir = 'errors'  # Directory to store error logs
     if not os.path.exists(log_dir):
-        os.makedirs(log_dir)  # Создаем папку, если она не существует
-    excel_file = 'errors/error_log.xlsx'  # Имя Excel файла для хранения логов ошибок
+        os.makedirs(log_dir)  # Create the directory if it doesn't exist
+    excel_file = os.path.join(log_dir, 'error_log.xlsx')  # Path to the Excel file for logging errors
 
     @functools.wraps(func)
     def wrapper_debug(*args, **kwargs):
-        while True:
-            try:
-                # Пытаемся открыть существующий файл или создать новый
-                if os.path.exists(excel_file):
-                    workbook = load_workbook(excel_file)
-                    sheet = workbook.active
-                else:
-                    workbook = Workbook()
-                    sheet = workbook.active
-                    # Создаём заголовки для нового файла
-                    sheet.append(
-                        ["Timestamp", "Function Name", "Arguments", "Keyword Arguments", "Error Type", "Error Message",
-                         "Traceback"])
-                break  # Выходим из цикла, если файл доступен для записи
-
-            except (PermissionError, InvalidFileException):
-                print(f"Excel file '{excel_file}' is locked or in use. Retrying in 3 seconds...")
-                time.sleep(3)
-
         try:
+            # Execute the function
             result = func(*args, **kwargs)
+
+            # Display debugging information if enabled
             if display_info:
                 print(f"--- DEBUGGING FUNCTION '{func.__name__}' ---")
                 print(f"Arguments: {args}")
@@ -53,38 +74,29 @@ def debug_decorator(func, record_errors=True, display_errors_in_full=True, displ
 
         except Exception as e:
             error_traceback = traceback.format_exc()
-            # Записываем ошибку в Excel файл, если `record_errors=True`
+
+            # Log the error to Excel if `record_errors` is enabled
             if record_errors:
                 error_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                # Собираем информацию об ошибке
-                row = [
-                    error_time,  # Время ошибки
-                    func.__name__,  # Имя функции
-                    str(args),  # Аргументы
-                    str(kwargs),  # Ключевые аргументы
-                    type(e).__name__,  # Тип ошибки
-                    str(e),  # Сообщение об ошибке
-                    error_traceback  # Полная трассировка
+                error_data = [
+                    error_time,  # Timestamp of the error
+                    func.__name__,  # Function name
+                    str(args),  # Function arguments
+                    str(kwargs),  # Keyword arguments
+                    type(e).__name__,  # Error type
+                    str(e),  # Error message
+                    error_traceback  # Full traceback
                 ]
 
-                # Добавляем строку в таблицу
-                sheet.append(row)
-
-                while True:
-                    try:
-                        # Пытаемся сохранить файл
-                        workbook.save(excel_file)
-                        break  # Выходим из цикла, если сохранение прошло успешно
-                    except PermissionError:
-                        print(f"Cannot save Excel file '{excel_file}' as it is locked. Retrying in 3 seconds...")
-                        time.sleep(3)  # Ждем 3 секунды перед повторной попыткой
+                # Call the helper function to write the error to the Excel file
+                column_names = ["Timestamp", "Function Name", "Arguments", "Keyword Arguments", "Error Type", "Error Message","Traceback"]
+                write_error_to_excel(excel_file, error_data, column_names)
 
                 print(f"Error in function '{func.__name__}' logged to {excel_file}")
 
-            # Показываем ошибку в консоли, если `display_errors=True`
+            # Display the error message in the console based on the settings
             if display_errors_short:
                 print(f"Error in function '{func.__name__}'")
-
             elif display_errors_in_full:
                 print(f"--- ERROR in function '{func.__name__}' ---")
                 print(f"Arguments: {args}")
@@ -95,8 +107,6 @@ def debug_decorator(func, record_errors=True, display_errors_in_full=True, displ
                 print(f"---------------------------\n")
 
     return wrapper_debug
-
-
 
 def normalize_string(s):
     """Helper function to normalize strings: lowercases, removes extra spaces and common separators."""
@@ -149,7 +159,51 @@ def complete_match(name, text):
         return True, "Identical"
 
 
+
+@debug_decorator
+def move_file(src_file_path, dest_dir, logs_bool=True, log_dir = 'errors', logs_path = 'info_log.xlsx' ):
+    file_name, file_extension = os.path.splitext(os.path.basename(src_file_path))
+    dest_file_path = os.path.join(dest_dir, file_name + file_extension)
+
+    # Если файл уже существует в целевой директории
+    if os.path.exists(dest_file_path):
+        counter = 2  # начинаем счет с 2 (file (2).pdf)
+        while True:
+            new_file_name = f"{file_name} ({counter}){file_extension}"
+            new_dest_file_path = os.path.join(dest_dir, new_file_name)
+            if not os.path.exists(new_dest_file_path):
+                dest_file_path = new_dest_file_path
+                break
+            counter += 1
+
+    # Перемещаем файл
+    shutil.move(src_file_path, dest_file_path)
+    print(f"{src_file_path} moved to: {dest_file_path}")
+
+
+    if logs_bool:
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)  # Create the directory if it doesn't exist
+        info_file = os.path.join(log_dir, logs_path)  # Path to the Excel file for logging errors
+
+        error_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        error_data = [
+            error_time,  # Timestamp of the error
+            src_file_path,  # Function name
+            "> moved to >",
+            dest_file_path,
+        ]
+
+        column_names = ["log_time",  "src_file_path",  "> moved to >", "dest_file_path"]
+        write_error_to_excel(info_file, error_data, column_names)
+
+    return f"{src_file_path} moved to: {dest_file_path}"
+
+
+
 if __name__ == '__main__':
+    move_file('52343456.py', 'errors' )
+    input("End")
 
     test_cases = [
         ("John Doe", "AG123123 01.04.20024 John Doe. str Marsweg 62a"),
